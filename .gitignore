@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+.env
+node_modules/
+data/raw/
+data/processed/
+*.csv
+*.json
+*.faiss
+*.pkl
