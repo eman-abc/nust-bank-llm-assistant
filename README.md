@@ -29,7 +29,15 @@ pip install -r requirements.txt
 
 If they don’t exist, generate them using the notebooks in `notebooks/` (data ingestion + indexing).
 
-4. Set your Hugging Face token (PowerShell):
+4. Provide your Hugging Face token
+
+Option A (recommended): create a local `.env` file in the repo root:
+
+```powershell
+HF_TOKEN="YOUR_TOKEN_HERE"
+```
+
+Option B: set it as an environment variable in PowerShell:
 
 ```powershell
 $env:HF_TOKEN="YOUR_TOKEN_HERE"
