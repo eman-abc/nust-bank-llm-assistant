@@ -1,5 +1,6 @@
 import os
 import pickle
+from functools import lru_cache
 from pathlib import Path
 from typing import List, Tuple
 
@@ -8,6 +9,8 @@ import gradio as gr
 from huggingface_hub import InferenceClient
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
+
+
 
 
 def _repo_root() -> Path:
@@ -45,7 +48,7 @@ def _format_numbers_bold(text: str) -> str:
     return re.sub(r"(\d[\d,./-]*)", r"**\1**", text)
 
 
-@gr.cache()
+@lru_cache(maxsize=1)
 def _load_retrieval():
     index_path, mapping_path = _artifact_paths()
     if not index_path.exists() or not mapping_path.exists():
@@ -116,5 +119,5 @@ demo = gr.ChatInterface(
 
 if __name__ == "__main__":
     # HF Spaces expects 0.0.0.0:7860; locally this also works.
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.launch(server_name="0.0.0.0", server_port=7860, share=True)
 
