@@ -1,9 +1,2 @@
-fastapi
-uvicorn
-langchain
-langchain-community
-faiss-cpu
-sentence-transformers
-pandas
-python-dotenv
-jupyter
+# Deprecated: use the repository root requirements.txt.
+#   pip install -r ..\requirements.txt

@@ -4,7 +4,7 @@ This project provides a **banking Q&A assistant** that uses:
 
 - **FAISS** retrieval over your local knowledge base (`data/processed/bank_faiss.index` + `text_mapping.pkl`)
 - **Sentence-Transformers** embeddings (`all-MiniLM-L6-v2`)
-- **Qwen2.5-7B-Instruct** via **Hugging Face Inference API** (requires `HF_TOKEN`)
+- **Qwen2.5-3B-Instruct** (under 6B parameters) via **Hugging Face Inference API** (requires `HF_TOKEN`)
 - A **Gradio** chat UI
 
 ## Run locally (Windows)
@@ -60,6 +60,6 @@ Open the printed local URL in your browser.
 
 ## Notes
 
-- If you want **fully offline** inference on your PC, use the existing `frontend/app.py` Streamlit local model approach instead of the HF Inference API.
+- Optional: override the inference model with `HF_LLM_MODEL` (must stay under **6B parameters** per project policy). Default is `Qwen/Qwen2.5-3B-Instruct`. Example: `google/gemma-2-2b-it`.
 - Large artifacts are often gitignored; make sure `data/processed/*` is available in whatever environment you run.
 
