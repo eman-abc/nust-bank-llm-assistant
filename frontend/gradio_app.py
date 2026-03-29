@@ -1,285 +1,138 @@
 import os
-import pickle
-import threading
+from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
-from typing import Any, Dict, List, Optional
 
-import faiss
 import gradio as gr
-import numpy as np
-from dotenv import load_dotenv
-from huggingface_hub import InferenceClient
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from sentence_transformers import SentenceTransformer
+import requests
 
-try:
-    import pandas as pd
-except ImportError:  # pragma: no cover
-    pd = None  # type: ignore
-
-# --- Paths & env ---
-def _repo_root() -> Path:
-    here = Path(__file__).resolve()
-    return here.parents[1]
-
-
-load_dotenv(dotenv_path=_repo_root() / ".env", override=False)
-
-_retrieval_lock = threading.Lock()
-_state: Dict[str, Any] = {
-    "embed_model": None,
-    "index": None,
-    "text_mapping": None,
-    "index_path": None,
-    "mapping_path": None,
-}
-
-
-def _artifact_paths() -> tuple[Path, Path]:
-    root = _repo_root()
-    preferred_index = root / "data" / "processed" / "bank_faiss.index"
-    preferred_mapping = root / "data" / "processed" / "text_mapping.pkl"
-    if preferred_index.exists() and preferred_mapping.exists():
-        return preferred_index, preferred_mapping
-    cwd_index = Path.cwd() / "bank_faiss.index"
-    cwd_mapping = Path.cwd() / "text_mapping.pkl"
-    return cwd_index, cwd_mapping
-
-
-def _normalize_mapping(raw: Any) -> Dict[int, Dict[str, Any]]:
-    if isinstance(raw, dict):
-        return {int(k): v for k, v in raw.items()}
-    if isinstance(raw, list):
-        out: Dict[int, Dict[str, Any]] = {}
-        for i, x in enumerate(raw):
-            if isinstance(x, dict):
-                out[i] = x
-            else:
-                out[i] = {
-                    "chunk_text": str(x),
-                    "question": "",
-                    "sheet": "",
-                    "topic": "",
-                    "source_row_index": i,
-                }
-        return out
-    raise TypeError("text_mapping must be dict or list")
-
-
-def ensure_retrieval_loaded() -> None:
-    if _state["embed_model"] is not None:
-        return
-    index_path, mapping_path = _artifact_paths()
-    if not index_path.exists() or not mapping_path.exists():
-        raise FileNotFoundError(
-            "Missing retrieval artifacts. Expected either:\n"
-            f"- {index_path}\n- {mapping_path}\n\n"
-            "Generate them via `notebooks/02_indexing.ipynb` or copy files into place."
-        )
-    _state["embed_model"] = SentenceTransformer("all-MiniLM-L6-v2")
-    _state["index"] = faiss.read_index(str(index_path))
-    with open(mapping_path, "rb") as f:
-        _state["text_mapping"] = _normalize_mapping(pickle.load(f))
-    _state["index_path"] = index_path
-    _state["mapping_path"] = mapping_path
-
-
-def _persist_retrieval() -> None:
-    ip, mp = _state["index_path"], _state["mapping_path"]
-    if ip is None or mp is None:
-        return
-    faiss.write_index(_state["index"], str(ip))
-    with open(mp, "wb") as f:
-        pickle.dump(_state["text_mapping"], f)
-
-
-def _next_chunk_id(mapping: Dict[int, Any]) -> int:
-    if not mapping:
-        return 0
-    return max(mapping.keys()) + 1
-
-
-def _read_uploaded_text(file_path: str) -> str:
-    p = Path(file_path)
-    suffix = p.suffix.lower()
-    if suffix == ".txt":
-        return p.read_text(encoding="utf-8", errors="replace")
-    if suffix == ".csv":
-        if pd is None:
-            raise RuntimeError("pandas is required to read CSV uploads. pip install pandas")
-        df = pd.read_csv(file_path)
-        return df.to_csv(index=False)
-    raise ValueError(f"Unsupported file type: {suffix}")
-
-
-def _normalize_upload_path(file_path: Any) -> Optional[str]:
-    if file_path is None:
-        return None
-    if isinstance(file_path, (list, tuple)):
-        return str(file_path[0]) if file_path else None
-    return str(file_path)
-
+# Point this to your FastAPI server
+API_BASE_URL = "http://127.0.0.1:8000/api"
 
 def process_uploaded_file(file_path: Any) -> str:
-    """Ingest upload: chunk → embed → extend FAISS + text_mapping → persist."""
-    file_path = _normalize_upload_path(file_path)
+    """Sends the uploaded file to the FastAPI backend for ingestion."""
     if not file_path:
-        return "Error: No file uploaded. Choose a .txt or .csv file first."
-    try:
-        with _retrieval_lock:
-            ensure_retrieval_loaded()
-            text = _read_uploaded_text(file_path)
-            if not text.strip():
-                return "Error: File is empty."
-
-            splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
-            chunks = splitter.split_text(text)
-            if not chunks:
-                return "Error: No chunks produced from file content."
-
-            embed_model = _state["embed_model"]
-            index = _state["index"]
-            text_mapping: Dict[int, Dict[str, Any]] = _state["text_mapping"]
-
-            vectors = embed_model.encode(chunks, show_progress_bar=False)
-            arr = np.asarray(vectors, dtype=np.float32)
-            if arr.shape[1] != index.d:
-                return (
-                    f"Error: Embedding dimension {arr.shape[1]} does not match index ({index.d})."
-                )
-
-            start_id = _next_chunk_id(text_mapping)
-            fname = Path(file_path).name
-            for i, chunk in enumerate(chunks):
-                text_mapping[start_id + i] = {
-                    "chunk_text": chunk,
-                    "question": "Uploaded policy",
-                    "sheet": "User Upload",
-                    "topic": fname,
-                    "source_row_index": -1,
-                }
-
-            index.add(arr)
-            _state["index"] = index
-            _state["text_mapping"] = text_mapping
-            _persist_retrieval()
-
-        return f"Successfully added {len(chunks)} chunks to the database."
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def _format_numbers_bold(text: str) -> str:
-    import re
-
-    return re.sub(r"(\d[\d,./-]*)", r"**\1**", text)
-
-
-def _chunk_context_text(entry: Any) -> str:
-    if isinstance(entry, dict):
-        return (entry.get("chunk_text") or "").strip()
-    return str(entry)
-
-
-def _client() -> InferenceClient:
-    token = os.environ.get("HF_TOKEN")
-    if not token:
-        raise RuntimeError(
-            "HF_TOKEN is not set. Add it as an environment variable (local) or a Space secret (HF Spaces)."
-        )
-    model_id = os.environ.get("HF_LLM_MODEL", "Qwen/Qwen2.5-3B-Instruct")
-    return InferenceClient(model=model_id, token=token)
-
-
-def bank_assistant(message: str, history: Optional[Any] = None) -> str:
-    with _retrieval_lock:
-        ensure_retrieval_loaded()
-        embed_model = _state["embed_model"]
-        index = _state["index"]
-        text_mapping = _state["text_mapping"]
-
-    msg_lower = (message or "").strip().lower()
-    if any(w in msg_lower for w in ["hi", "hello", "hey", "salam", "assalam"]) or "thank" in msg_lower:
-        return "Hello! Welcome to NUST Bank. How can I assist you with our services today?"
-
-    query_vector = embed_model.encode([message])
-    distances, indices = index.search(query_vector, k=3)
-    context = "\n".join(
-        [_chunk_context_text(text_mapping[int(i)]) for i in indices[0]]
-    )
-
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a professional NUST Bank AI. Answer using ONLY the provided Context. "
-                "If the context does not contain the answer, strictly reply: "
-                "'I apologize, but I do not have that specific information in my records.' "
-                "Bold all numbers."
-            ),
-        },
-        {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {message}"},
-    ]
+        return "Error: No file uploaded."
+    
+    # Normalize path for Gradio
+    if isinstance(file_path, (list, tuple)):
+        file_path = str(file_path[0]) if file_path else None
+    else:
+        file_path = str(file_path)
 
     try:
-        response = _client().chat_completion(messages=messages, max_tokens=150, temperature=0.1)
-        answer = response.choices[0].message.content.strip()
-        return _format_numbers_bold(answer)
+        # Hit the API's upload endpoint using multipart/form-data
+        with open(file_path, "rb") as f:
+            file_name = Path(file_path).name
+            files = {"file": (file_name, f)}
+            response = requests.post(f"{API_BASE_URL}/upload", files=files, timeout=30)
+            
+        response.raise_for_status() # Check for HTTP errors
+        
+        data = response.json()
+        return data.get("message", "Successfully added to the database.")
+    
+    except requests.exceptions.ConnectionError:
+        return "⚠️ Error: Could not connect to backend. Is FastAPI running on port 8000?"
     except Exception as e:
-        return (
-            "System Error: ensure `HF_TOKEN` is set, the model is under 6B (default: Qwen2.5-3B-Instruct), "
-            "and your account can access it via Inference API. "
-            f"({str(e)})"
-        )
-
+        return f"⚠️ Server Error: {str(e)}"
 
 def _chat_respond(
     message: str, history: Optional[List[Dict[str, Any]]]
 ) -> Tuple[List[Dict[str, Any]], str]:
-    """Gradio 6 Chatbot uses messages: list of {role, content} dicts."""
+    """Sends the user message to the FastAPI backend and updates the chat history."""
     history = list(history or [])
     if not (message or "").strip():
         return history, ""
-    reply = bank_assistant(message, history)
+
+    # 1. Append the user's message to the UI history immediately
     history.append({"role": "user", "content": message})
-    history.append({"role": "assistant", "content": reply})
+
+    try:
+        # 2. Hit the API's chat endpoint with JSON payload
+        response = requests.post(
+            f"{API_BASE_URL}/chat", 
+            json={"user_query": message},
+            timeout=45 # Generous timeout for LLM generation
+        )
+        response.raise_for_status()
+        
+        data = response.json()
+        reply = data.get("final_response", "Error generating response.")
+        
+        # Optional: Add debug metrics for your Viva presentation
+        is_safe = data.get("is_safe", False)
+        context_used = data.get("context_used", False)
+        debug_footer = f"\n\n---\n*Debug: [Safe: {is_safe} | Context Retrieved: {context_used}]*"
+        
+        # 3. Append the API's response to the UI history
+        history.append({"role": "assistant", "content": reply + debug_footer})
+        
+    except requests.exceptions.ConnectionError:
+        error_msg = "⚠️ Error: Cannot connect to backend. Is the FastAPI server running on port 8000?"
+        history.append({"role": "assistant", "content": error_msg})
+    except Exception as e:
+        history.append({"role": "assistant", "content": f"⚠️ Server Error: {str(e)}"})
+
     return history, ""
 
 
-def build_demo() -> gr.Blocks:
-    try:
-        ensure_retrieval_loaded()
-        startup_status = "Knowledge base loaded."
-    except FileNotFoundError as e:
-        startup_status = f"Warning: {e}"
+def chat_with_api_stream(user_message, history):
+    history.append({"role": "user", "content": user_message})
+    history.append({"role": "assistant", "content": ""}) # Placeholder for bot
+    
+    # Use 'stream=True' in requests
+    with requests.post(f"{API_BASE_URL}/chat/stream", 
+                       json={"user_query": user_message}, 
+                       stream=True) as r:
+        for chunk in r.iter_content(chunk_size=None, decode_unicode=True):
+            if chunk:
+                history[-1]["content"] += chunk
+                yield history, "" # This updates the UI word-by-word!
 
-    with gr.Blocks(theme=gr.themes.Soft(), title="NUST Bank Customer Support Hub") as demo:
-        gr.Markdown("# NUST Bank Customer Support Hub")
+def build_demo() -> gr.Blocks:
+    startup_status = "UI Ready. Connect to FastAPI backend for data."
+
+    # FIX 1: Removed 'theme=gr.themes.Soft()' from the Blocks constructor
+    with gr.Blocks(title="NUST Bank Customer Support Hub") as demo:
+        gr.Markdown("# 🏦 NUST Bank Agentic Command Center")
+        
         with gr.Row():
-            with gr.Column():
-                gr.Markdown("### Knowledge Base Manager")
+            # Left Column: Knowledge Management
+            with gr.Column(scale=1):
+                gr.Markdown("### 🗄️ Knowledge Base Manager")
                 upload = gr.File(
                     file_types=[".txt", ".csv"],
                     label="Upload New Bank Policy",
                     type="filepath",
                 )
-                update_btn = gr.Button("Update Knowledge Base")
+                update_btn = gr.Button("Update Knowledge Base", variant="secondary")
                 status = gr.Textbox(
                     label="System Status",
                     value=startup_status,
                     interactive=False,
                     lines=3,
                 )
-            with gr.Column():
-                gr.Markdown("### Chat")
-                chatbot = gr.Chatbot(height=500, label="Assistant")
-                user_in = gr.Textbox(
-                    label="Your message",
-                    placeholder="Ask about policies, rates, or services…",
-                    lines=2,
-                )
-                send_btn = gr.Button("Send")
+                
+                gr.Markdown("---")
+                gr.Markdown("### ⚙️ Architecture Profile\n- **Frontend:** Gradio Thin Client\n- **Backend:** FastAPI Microservice\n- **Logic:** LangGraph Orchestrator")
 
+            # Right Column: Chat Interface
+            with gr.Column(scale=2):
+                gr.Markdown("### 💬 Live Agent Chat")
+                
+                # FIX 2: Removed 'type="messages"' because it is now the Gradio 6 default
+                chatbot = gr.Chatbot(height=500, label="Assistant")
+                
+                with gr.Row():
+                    user_in = gr.Textbox(
+                        label="Your message",
+                        placeholder="e.g., What are the requirements for a Roshan Digital Account?",
+                        lines=1,
+                        scale=4
+                    )
+                    send_btn = gr.Button("Send", variant="primary", scale=1)
+
+        # Wire up the events
         update_btn.click(
             fn=process_uploaded_file,
             inputs=[upload],
@@ -299,8 +152,13 @@ def build_demo() -> gr.Blocks:
 
     return demo
 
-
 demo = build_demo()
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860, share=True)
+    # FIX 3: Moved the theme parameter into the launch method
+    demo.launch(server_name="0.0.0.0", server_port=7860, share=True, theme=gr.themes.Soft())
+    # asyncio is a Python standard library module that provides support for writing concurrent code using the async/await syntax.
+    # It is used for asynchronous programming, allowing you to handle tasks such as I/O operations (like network requests or file reading)
+    # without blocking the execution of your program. With asyncio, you can run multiple tasks seemingly at the same time
+    # (i.e., concurrently), which is particularly useful for applications that spend a lot of time waiting for external operations,
+    # such as web servers, chatbots, or any service needing efficient handling of many connections or requests simultaneously.
