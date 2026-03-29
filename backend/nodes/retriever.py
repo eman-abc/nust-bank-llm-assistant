@@ -17,7 +17,7 @@ from backend.state import AgentState
 
 logger = logging.getLogger(__name__)
 
-_BACKEND_DIR = Path(__file__).resolve().parent
+_BACKEND_DIR = Path(__file__).resolve().parents[1]
 _REPO_ROOT = _BACKEND_DIR.parent
 _PROCESSED = _REPO_ROOT / "data" / "processed"
 _INDEX_PATH = _PROCESSED / "bank_faiss.index"
