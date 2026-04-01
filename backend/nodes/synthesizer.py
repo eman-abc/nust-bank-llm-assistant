@@ -6,19 +6,14 @@ Features Cascade Fallback logic for high availability.
 from __future__ import annotations
 
 import logging
-import os
-from pathlib import Path
-from typing import Any, Dict
+from typing import Dict
 
-from dotenv import load_dotenv
 from huggingface_hub import InferenceClient
 
+from backend.config import get_settings
 from backend.state import AgentState
 
 logger = logging.getLogger(__name__)
-
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(dotenv_path=_REPO_ROOT / ".env", override=False)
 
 _FALLBACK_MODELS = [
     "google/gemma-2-2b-it",               # Google's highly reliable open model
@@ -46,17 +41,29 @@ def run_synthesizer(state: AgentState) -> Dict[str, str]:
     Build messages from system persona + retrieved context + scrubbed query.
     Attempts to call HF Inference API, cascading through fallback models if one is down.
     """
-    context = (state.get("retrieved_context") or "").strip()
-    query = (state.get("scrubbed_query") or "").strip()
+    context = (state.get("selected_context") or state.get("retrieved_context") or "").strip()
+    query = (state.get("normalized_query") or state.get("scrubbed_query") or "").strip()
+    citations = list(state.get("citations") or [])
 
     if not query:
         return {
             "final_response": "I don't have a valid question to answer. Please type your banking question."
         }
 
+    if not context:
+        return {
+            "final_response": (
+                "I don't have enough verified information in the bank's records to answer that confidently. "
+                "Please contact an official branch or support channel for confirmation."
+            )
+        }
+
+    citation_lines = "\n".join(f"- {citation.get('doc_id', '')}" for citation in citations[:3] if citation.get("doc_id"))
+
     user_content = (
         f"Context:\n{context}\n\n"
         f"Customer question:\n{query}\n\n"
+        f"Approved citations:\n{citation_lines or '- none'}\n\n"
         "Provide a concise, accurate reply as a NUST Bank support agent."
     )
 
@@ -65,7 +72,7 @@ def run_synthesizer(state: AgentState) -> Dict[str, str]:
         {"role": "user", "content": user_content},
     ]
 
-    token = os.environ.get("HF_TOKEN")
+    token = get_settings().hf_token
     if not token:
         return {"final_response": "Server Error: HF_TOKEN is not configured."}
 

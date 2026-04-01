@@ -1,39 +1,48 @@
-# File: backend/nodes/guardrail.py
-from transformers import pipeline
+from __future__ import annotations
+
 import logging
+
+from transformers import pipeline
 
 logger = logging.getLogger(__name__)
 
-# 1. Load the model globally so it only initializes once
-try:
-    logger.info("Loading DeBERTa Guardrail Model...")
-    injection_classifier = pipeline(
-        "text-classification", 
-        model="ProtectAI/deberta-v3-base-injection"
-    )
-except Exception as e:
-    logger.error(f"Failed to load guardrail model: {e}")
-    injection_classifier = None
+_injection_classifier = None
 
-# 2. Define the LangGraph Node
+
+def _get_injection_classifier():
+    global _injection_classifier
+    if _injection_classifier is not None:
+        return _injection_classifier
+
+    try:
+        logger.info("Loading DeBERTa guardrail model...")
+        _injection_classifier = pipeline(
+            "text-classification",
+            model="ProtectAI/deberta-v3-base-injection",
+        )
+    except Exception as exc:
+        logger.error("Failed to load guardrail model: %s", exc)
+        _injection_classifier = False
+    return _injection_classifier
+
+
 def guardrail_node(state: dict):
     """
-    Semantic Firewall: Checks for prompt injection BEFORE hitting the LLM.
+    Semantic firewall that checks for prompt injection before the main evaluator.
     """
     user_query = state.get("user_query", "")
-    
-    if injection_classifier:
-        # Run the fast classification
-        result = injection_classifier(user_query)[0]
-        
-        # The model returns labels like 'INJECTION' or 'SAFE'
-        if result['label'] == 'INJECTION' and result['score'] > 0.75:
-            logger.warning(f"🛡️ INJECTION BLOCKED: {user_query}")
+    classifier = _get_injection_classifier()
+
+    if classifier:
+        result = classifier(user_query)[0]
+        if result["label"] == "INJECTION" and result["score"] > 0.75:
+            logger.warning("Injection blocked at guardrail: %s", user_query)
             return {
                 "is_safe": False,
-                "final_response": "⚠️ SECURITY ALERT: This request violates NUST Bank's safety policies and has been blocked.",
-                "next_step": "end" # Tell LangGraph to route to END
+                "final_response": (
+                    "Security Alert: This request violates NUST Bank's safety policies and has been blocked."
+                ),
+                "next_step": "end",
             }
-            
-    # If safe, tell the graph to proceed to your normal evaluator
+
     return {"is_safe": True, "next_step": "evaluator"}

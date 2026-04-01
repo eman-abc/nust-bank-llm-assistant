@@ -1,26 +1,90 @@
-version: '3.8'
-
 services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   backend:
     build:
       context: .
-      dockerfile: Dockerfile.backend
+      dockerfile: DockerFile.backend
     ports:
       - "8000:8000"
     env_file:
-      - .env # This pulls your LANGCHAIN_API_KEY automatically!
+      - .env
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - QDRANT_COLLECTION=bank_knowledge
+      - QDRANT_DENSE_VECTOR_NAME=dense
+      - QDRANT_SPARSE_VECTOR_NAME=sparse
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+      - RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
+    depends_on:
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+
+  worker:
+    build:
+      context: .
+      dockerfile: DockerFile.backend
+    command: ["celery", "-A", "backend.celery_app:celery_app", "worker", "--loglevel=info"]
+    env_file:
+      - .env
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - QDRANT_COLLECTION=bank_knowledge
+      - QDRANT_DENSE_VECTOR_NAME=dense
+      - QDRANT_SPARSE_VECTOR_NAME=sparse
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+      - RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
+    depends_on:
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_healthy
     volumes:
       - ./data:/app/data
 
   frontend:
     build:
       context: .
-      dockerfile: Dockerfile.frontend
+      dockerfile: DockerFile.frontend
     ports:
       - "7860:7860"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     environment:
       - API_BASE_URL=http://backend:8000/api
-    # We add this to ensure the stream isn't buffered/blocked by Docker
     stop_signal: SIGINT
+
+volumes:
+  qdrant_storage:

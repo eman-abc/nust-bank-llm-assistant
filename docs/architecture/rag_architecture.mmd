@@ -1,0 +1,31 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	guardrail(guardrail)
+	privacy_sanitizer(privacy_sanitizer)
+	query_normalizer(query_normalizer)
+	hybrid_retriever(hybrid_retriever)
+	reranker(reranker)
+	context_builder(context_builder)
+	synthesizer(synthesizer)
+	grounding_checker(grounding_checker)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> guardrail;
+	context_builder -.-> grounding_checker;
+	context_builder -.-> synthesizer;
+	guardrail -.-> __end__;
+	guardrail -. &nbsp;continue&nbsp; .-> privacy_sanitizer;
+	hybrid_retriever --> reranker;
+	privacy_sanitizer -.-> __end__;
+	privacy_sanitizer -. &nbsp;continue&nbsp; .-> query_normalizer;
+	query_normalizer --> hybrid_retriever;
+	reranker --> context_builder;
+	synthesizer --> grounding_checker;
+	grounding_checker --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

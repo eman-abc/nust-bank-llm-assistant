@@ -1,131 +1,86 @@
 """
-NUST Bank Assistant — LangGraph orchestrator (Phase 3).
-
-This module wires the pipeline nodes into a single **deterministic** graph:
-
-    guardrail → (safe?) → evaluator → (safe?) → retriever → synthesizer → END
-        ↘ (unsafe) → END      ↘ (unsafe) → END
-
-The graph shares one `AgentState` object across steps; each node returns a **partial**
-update dict that LangGraph merges into the running state.
-
-Run locally (from repository root, with venv + deps installed):
-
-    python -m backend.orchestrator
+NUST Bank Assistant - hybrid LangGraph orchestrator.
 """
 
 from __future__ import annotations
+
 import textwrap
 
-# ---------------------------------------------------------------------------
-# 1. LangGraph core: StateGraph defines the workflow; END is the terminal sink.
-# ---------------------------------------------------------------------------
 from langgraph.graph import END, StateGraph
 
-# ---------------------------------------------------------------------------
-# 2. Shared typed state (single source of truth for all nodes).
-# ---------------------------------------------------------------------------
+from backend.nodes.context_builder import run_context_builder
+from backend.nodes.grounding_checker import run_grounding_checker
+from backend.nodes.guardrail import guardrail_node
+from backend.nodes.hybrid_retriever import run_hybrid_retriever
+from backend.nodes.privacy_sanitizer import run_privacy_sanitizer
+from backend.nodes.query_normalizer import run_query_normalizer
+from backend.nodes.reranker import run_reranker
+from backend.nodes.synthesizer import run_synthesizer
 from backend.state import AgentState
 
-# ---------------------------------------------------------------------------
-# 3. Node callables — each accepts full AgentState and returns a partial update.
-# ---------------------------------------------------------------------------
-from backend.nodes.guardrail import guardrail_node
-from backend.nodes.evaluator import run_evaluator
-from backend.nodes.retriever import run_retriever
-from backend.nodes.synthesizer import run_synthesizer
-import textwrap
-from dotenv import load_dotenv
 
-# Load environment variables FIRST
-load_dotenv()
-
-# =============================================================================
-# Routing: Semantic Firewall -> Evaluator
-# =============================================================================
-
-def route_after_guardrail(state: AgentState) -> str:
-    """
-    Conditional router following the Prompt Injection guardrail node.
-    
-    - If ``is_safe`` is False (injection detected) → terminate immediately (END).
-    - Otherwise → continue to the standard PII/intent evaluator.
-    """
-    if state.get("is_safe") is False:
-        return END
-    return "evaluator"
+def route_if_safe(state: AgentState) -> str:
+    return END if state.get("is_safe") is False else "continue"
 
 
-# =============================================================================
-# Routing: Evaluator -> Retriever
-# =============================================================================
-
-def route_after_evaluation(state: AgentState) -> str:
-    """
-    Conditional router following the evaluator node.
-
-    - If ``is_safe`` is False → terminate immediately (skip retriever + synthesizer).
-    - Otherwise → continue to the vector retriever.
-    """
-    if state.get("is_safe") is False:
-        return END
-    return "retriever"
+def route_after_context_builder(state: AgentState) -> str:
+    if (state.get("selected_context") or "").strip():
+        return "synthesizer"
+    return "grounding_checker"
 
 
-# =============================================================================
-# Graph construction
-# =============================================================================
-
-# Blank workflow over our TypedDict schema
 workflow = StateGraph(AgentState)
-
-# Register named nodes
 workflow.add_node("guardrail", guardrail_node)
-workflow.add_node("evaluator", run_evaluator)
-workflow.add_node("retriever", run_retriever)
+workflow.add_node("privacy_sanitizer", run_privacy_sanitizer)
+workflow.add_node("query_normalizer", run_query_normalizer)
+workflow.add_node("hybrid_retriever", run_hybrid_retriever)
+workflow.add_node("reranker", run_reranker)
+workflow.add_node("context_builder", run_context_builder)
 workflow.add_node("synthesizer", run_synthesizer)
+workflow.add_node("grounding_checker", run_grounding_checker)
 
-# 🚨 THE ENTRY POINT IS NOW THE FIREWALL 🚨
 workflow.set_entry_point("guardrail")
 
-# Branch after guardrail: unsafe ends the run; safe continues to evaluator.
 workflow.add_conditional_edges(
     "guardrail",
-    route_after_guardrail,
+    route_if_safe,
     {
         END: END,
-        "evaluator": "evaluator",
+        "continue": "privacy_sanitizer",
     },
 )
-
-# Branch after evaluator: unsafe path ends the run; safe path loads FAISS context.
 workflow.add_conditional_edges(
-    "evaluator",
-    route_after_evaluation,
+    "privacy_sanitizer",
+    route_if_safe,
     {
         END: END,
-        "retriever": "retriever",
+        "continue": "query_normalizer",
     },
 )
 
-# Linear tail: retrieved chunks → LLM answer → graph END.
-workflow.add_edge("retriever", "synthesizer")
-workflow.add_edge("synthesizer", END)
+workflow.add_edge("query_normalizer", "hybrid_retriever")
+workflow.add_edge("hybrid_retriever", "reranker")
+workflow.add_edge("reranker", "context_builder")
+workflow.add_conditional_edges(
+    "context_builder",
+    route_after_context_builder,
+    {
+        "synthesizer": "synthesizer",
+        "grounding_checker": "grounding_checker",
+    },
+)
+workflow.add_edge("synthesizer", "grounding_checker")
+workflow.add_edge("grounding_checker", END)
 
-# Compiled runnable: invoke with a dict matching AgentState
 bank_bot = workflow.compile()
 
-
-# =============================================================================
-# Local CLI tester — run:  python -m backend.orchestrator
-# =============================================================================
 
 if __name__ == "__main__":
     print(
         textwrap.dedent(
             """
             ============================================================
-            NUST Bank Assistant — LangGraph CLI (Phase 3)
+            NUST Bank Assistant - Hybrid LangGraph CLI
             Type your question, or 'exit' to quit.
             ============================================================
             """
@@ -143,32 +98,17 @@ if __name__ == "__main__":
             print("Goodbye.")
             break
 
-        # Minimal seed state
-        initial_state: AgentState = {"user_query": user_line}
-
-        try:
-            result: AgentState = bank_bot.invoke(initial_state)
-        except Exception as exc:
-            print(f"\n[Pipeline error] {exc.__class__.__name__}: {exc}")
-            continue
-
-        # --- Readable post-run report (good for demos / viva) ---
-        safe = result.get("is_safe")
-        flagged = safe is False
-
+        result: AgentState = bank_bot.invoke({"user_query": user_line})
         print("\n" + "-" * 60)
-        print("ROUTING / STATE SUMMARY")
+        print("STATE SUMMARY")
         print("-" * 60)
-        print(f"  System flagged (unsafe)?        {flagged}")
-        print(f"  is_safe                         {safe!r}")
-        print(f"  scrubbed_query                  {result.get('scrubbed_query', '')!r}")
-
-        ctx = result.get("retrieved_context") or ""
-        ctx_preview = (ctx[:400] + "…") if len(ctx) > 400 else ctx
-        print(f"  retrieved_context (preview)     {ctx_preview!r}")
-
+        print(f"  is_safe                 {result.get('is_safe')!r}")
+        print(f"  query_intent            {result.get('query_intent', '')!r}")
+        print(f"  retrieval_confidence    {result.get('retrieval_confidence', 0.0)!r}")
+        print(f"  grounding_passed        {result.get('grounding_passed')!r}")
+        print(f"  citations               {result.get('citations', [])!r}")
         print("-" * 60)
-        print("FINAL RESPONSE (customer-facing)")
+        print("FINAL RESPONSE")
         print("-" * 60)
         print((result.get("final_response") or "").strip() or "(empty)")
         print("-" * 60)

@@ -1,0 +1,13 @@
+# Ignore all temp folders and files
+.pytest_cache
+.pytest_tmp
+**/.pytest_cache
+**/.pytest_tmp
+**/tmp*
+pytest-cache-files-*
+backend/tmp*
+**/*.pyc
+**/__pycache__
+.venv
+venv
+.git
