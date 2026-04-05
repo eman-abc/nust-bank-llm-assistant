@@ -14,12 +14,28 @@ from backend.config import get_settings
 from backend.state import AgentState
 
 logger = logging.getLogger(__name__)
+"""
+LLM synthesis node: Hugging Face Inference API (under 6B parameters).
+Features Cascade Fallback logic for high availability.
+"""
 
+from __future__ import annotations
+
+import logging
+from typing import Dict
+
+from huggingface_hub import InferenceClient
+
+from backend.config import get_settings
+from backend.state import AgentState
+
+logger = logging.getLogger(__name__)
+
+# Updated to use your fine-tuned model as the primary, with reliable fallbacks
 _FALLBACK_MODELS = [
-    "google/gemma-2-2b-it",               # Google's highly reliable open model
-    "mistralai/Mistral-7B-Instruct-v0.3", # The industry standard workhorse
-    "microsoft/Phi-3-mini-4k-instruct",
-    "Qwen/Qwen2.5-7B-Instruct",
+    "eman-abc/gemma-3-4b-bank-finetuned", # Primary: Your custom NUST Bank model
+    "google/gemma-2-2b-it",               # Fallback 1: Fast reliable fallback
+    "mistralai/Mistral-7B-Instruct-v0.3", # Fallback 2: Industry standard workhorse
 ]
 _MAX_TOKENS = 250
 
@@ -103,7 +119,7 @@ def run_synthesizer(state: AgentState) -> Dict[str, str]:
             print(f"[WARNING] Model {model_id} failed. Trying next... (Error: {e})")
             continue
 
-    # If the loop finishes and all 3 models failed
+    # If the loop finishes and all models failed
     return {
         "final_response": (
             "We are currently experiencing high server load. "

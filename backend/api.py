@@ -166,10 +166,28 @@ def task_status(task_id: str):
         raise HTTPException(status_code=500, detail="Failed to fetch task status.") from exc
 
 
+# @app.post("/api/chat/stream")
+# async def chat_stream(request: ChatRequest):
+#     async def event_generator():
+#         result = bank_bot.invoke({"user_query": request.user_query})
+#         full_text = result.get("final_response", "")
+
+#         words = full_text.split(" ")
+#         for word in words:
+#             yield f"{word} "
+#             await asyncio.sleep(0.04)
+
+#     return StreamingResponse(event_generator(), media_type="text/plain")
+
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest):
     async def event_generator():
-        result = bank_bot.invoke({"user_query": request.user_query})
+        # ✅ FIXED: Offload the heavy synchronous graph execution to a background thread
+        result = await asyncio.to_thread(
+            bank_bot.invoke, 
+            {"user_query": request.user_query}
+        )
+        
         full_text = result.get("final_response", "")
 
         words = full_text.split(" ")
