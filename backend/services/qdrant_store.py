@@ -138,9 +138,17 @@ def upsert_documents(
     if len(point_ids) != len(payloads):
         raise ValueError("The number of Qdrant point IDs must match the number of payloads.")
 
+    def _to_uuid(val: str) -> str:
+        try:
+            # If it's already a valid UUID, use it
+            return str(uuid.UUID(val))
+        except ValueError:
+            # Otherwise, create a deterministic UUID from the string
+            return str(uuid.uuid5(uuid.NAMESPACE_DNS, val))
+
     points = [
         models.PointStruct(
-            id=point_id or uuid.uuid4().hex,
+            id=_to_uuid(point_id) if point_id else uuid.uuid4().hex,
             vector={
                 settings.qdrant_dense_vector_name: list(dense_vector),
                 settings.qdrant_sparse_vector_name: _to_sparse_vector(sparse_vector),

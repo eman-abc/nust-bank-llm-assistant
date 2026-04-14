@@ -48,16 +48,19 @@ class Settings:
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+    redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+    qdrant_host = os.getenv("QDRANT_HOST", "127.0.0.1")
+    qdrant_port = os.getenv("QDRANT_PORT", "6333")
+    
     return Settings(
         api_base_url=os.getenv("API_BASE_URL", "http://127.0.0.1:8000/api"),
-        qdrant_url=os.getenv("QDRANT_URL", "http://127.0.0.1:6333"),
+        qdrant_url=os.getenv("QDRANT_URL", f"http://{qdrant_host}:{qdrant_port}"),
         qdrant_collection=os.getenv("QDRANT_COLLECTION", "bank_knowledge"),
         qdrant_dense_vector_name=os.getenv("QDRANT_DENSE_VECTOR_NAME", "dense"),
         qdrant_sparse_vector_name=os.getenv("QDRANT_SPARSE_VECTOR_NAME", "sparse"),
         redis_url=redis_url,
         celery_broker_url=os.getenv("CELERY_BROKER_URL", redis_url),
-        celery_result_backend=os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/1"),
+        celery_result_backend=os.getenv("CELERY_RESULT_BACKEND", redis_url.replace("/0", "/1")),
         hf_token=os.getenv("HF_TOKEN", ""),
         embedding_model=os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
         embedding_vector_size=int(os.getenv("EMBEDDING_VECTOR_SIZE", "384")),
@@ -68,10 +71,10 @@ def get_settings() -> Settings:
         architecture_artifacts_dir=Path(
             os.getenv("ARCHITECTURE_ARTIFACTS_DIR", str(ARCHITECTURE_ARTIFACTS_DIR))
         ),
-        dense_retrieval_limit=int(os.getenv("DENSE_RETRIEVAL_LIMIT", "8")),
-        sparse_retrieval_limit=int(os.getenv("SPARSE_RETRIEVAL_LIMIT", "8")),
-        rerank_top_k=int(os.getenv("RERANK_TOP_K", "6")),
-        final_context_k=int(os.getenv("FINAL_CONTEXT_K", "3")),
+        dense_retrieval_limit=int(os.getenv("DENSE_RETRIEVAL_LIMIT", "12")),
+        sparse_retrieval_limit=int(os.getenv("SPARSE_RETRIEVAL_LIMIT", "12")),
+        rerank_top_k=int(os.getenv("RERANK_TOP_K", "10")),
+        final_context_k=int(os.getenv("FINAL_CONTEXT_K", "6")),
         sparse_hash_space=int(os.getenv("SPARSE_HASH_SPACE", "2000003")),
-        retrieval_confidence_threshold=float(os.getenv("RETRIEVAL_CONFIDENCE_THRESHOLD", "0.2")),
+        retrieval_confidence_threshold=float(os.getenv("RETRIEVAL_CONFIDENCE_THRESHOLD", "0.1")),
     )

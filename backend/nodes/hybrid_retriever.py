@@ -27,9 +27,14 @@ def run_hybrid_retriever(state: AgentState) -> Dict[str, Any]:
             limit=max(settings.dense_retrieval_limit, settings.sparse_retrieval_limit),
             metadata_filters=state.get("metadata_filters"),
         )
-        top_score = candidates[0]["score"] if candidates else 0.0
+        
+        # Apply strict relevance filter
+        threshold = settings.retrieval_confidence_threshold
+        filtered_candidates = [c for c in candidates if c.get("score", 0.0) >= threshold]
+        
+        top_score = filtered_candidates[0]["score"] if filtered_candidates else 0.0
         return {
-            "retrieval_candidates": candidates,
+            "retrieval_candidates": filtered_candidates,
             "retrieval_confidence": float(max(top_score, 0.0)),
         }
     except Exception as exc:

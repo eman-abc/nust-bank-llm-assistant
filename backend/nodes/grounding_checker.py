@@ -29,13 +29,15 @@ def run_grounding_checker(state: AgentState) -> Dict[str, Any]:
     retrieval_confidence = float(state.get("retrieval_confidence") or 0.0)
     query_intent = state.get("query_intent", "general_faq")
 
-    if not selected_context or not citations:
+    # Lenient check: If we have context, we allow the answer even if formal citations are sparse
+    if not selected_context:
         return {
             "grounding_passed": False,
             "final_response": FALLBACK_RESPONSE,
         }
 
-    if retrieval_confidence < get_settings().retrieval_confidence_threshold:
+    # Only enforce strict confidence if it's very low
+    if retrieval_confidence < 0.1: 
         return {
             "grounding_passed": False,
             "final_response": FALLBACK_RESPONSE,

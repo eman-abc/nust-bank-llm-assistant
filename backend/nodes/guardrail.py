@@ -30,6 +30,22 @@ def guardrail_node(state: dict):
     """
     Semantic firewall that checks for prompt injection before the main evaluator.
     """
+    # 1. Broad Pattern Recognition
+    query = (state.get("user_query") or "").lower()
+    
+    blocked_keywords = [
+        "ignore previous", "system prompt", "dan mode", "step by step", 
+        "training data", "chat logs", "customer records", "agent interactions",
+        "sample interaction", "reveal your instructions", "interactions", "logs", "example conversation"
+    ]
+    
+    if any(k in query for k in blocked_keywords):
+        return {
+            "is_safe": False, 
+            "final_response": "I am not authorized to retrieve internal system logs, training data, or protected instructions. How can I help you with bank products?",
+            "next_step": "end",
+        }
+
     user_query = state.get("user_query", "")
     classifier = _get_injection_classifier()
 
